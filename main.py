@@ -1,5 +1,5 @@
 # ==============================================================================
-# API Intermediária ANEEL — Indicadores de Continuidade (Filtrado EPB)
+# API Intermediária ANEEL — Indicadores de Continuidade Coletivos (Base Completa)
 # ------------------------------------------------------------------------------
 # Hospedagem recomendada : Render.com (free tier)
 # Consumo no Power BI    : Web.Contents no Power Query (retorna CSV)
@@ -8,11 +8,11 @@
 
 from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse
-import pandas as pd
 import requests
 import zipfile
 import urllib3
 import os
+import shutil
 import tempfile
 from datetime import datetime, timedelta
 from requests.adapters import HTTPAdapter
@@ -21,18 +21,17 @@ from urllib3.util.retry import Retry
 urllib3.disable_warnings()
 
 app = FastAPI(
-    title="API ANEEL - Indicadores (EPB)",
-    description="Filtra Indicadores de Continuidade da ANEEL para a Energisa Paraíba (EPB).",
-    version="1.1.0",
+    title="API ANEEL - Indicadores de Continuidade",
+    description="Baixa e disponibiliza os Indicadores de Continuidade Coletivos da ANEEL sem filtros.",
+    version="1.0.0",
 )
 
 # ------------------------------------------------------------------------------
 # Configurações
 # ------------------------------------------------------------------------------
 URL_ANEEL = "https://dadosabertos.aneel.gov.br/dataset/d5f0712e-62f6-4736-8dff-9991f10758a7/resource/4493985c-baea-429c-9df5-3030422c71d7/download/indicadores-continuidade-coletivos-2020-2029.zip"
-AGENTE_ALVO = "EPB"
 CACHE_DURACAO_HORAS = 24
-ARQUIVO_CACHE = "indicadores_epb.csv"
+ARQUIVO_CACHE = "indicadores_cache.csv" # Arquivo que ficará salvo no disco do Render
 
 # ------------------------------------------------------------------------------
 # Controle de Cache
@@ -44,6 +43,7 @@ _cache: dict = {
 }
 
 def _cache_valido() -> bool:
+    # O cache só é válido se estiver no prazo E se o arquivo físico existir no disco
     return (
         _cache["expira_em"] is not None
         and datetime.now() < _cache["expira_em"]
@@ -60,10 +60,11 @@ def _coletar_dados_aneel() -> None:
     session.mount('https://', adapter)
 
     try:
+        # Usa uma pasta temporária apenas para baixar o ZIP
         with tempfile.TemporaryDirectory() as tmpdirname:
             zip_path = os.path.join(tmpdirname, "dados.zip")
             
-            # 1. Baixa o ZIP para o disco temporário
+            # 1. Download do arquivo ZIP
             response = session.get(URL_ANEEL, verify=False, stream=True, timeout=60)
             response.raise_for_status()
             
@@ -72,23 +73,13 @@ def _coletar_dados_aneel() -> None:
                     if chunk:
                         f.write(chunk)
                         
-            # 2. Lê direto do ZIP e filtra em blocos para não estourar a RAM
-            df_epb_list = []
+            # 2. Extrai o CSV direto do ZIP e salva no diretório principal da API
             with zipfile.ZipFile(zip_path, 'r') as z:
                 nome_arquivo = z.namelist()[0]
                 
-                with z.open(nome_arquivo) as f_csv:
-                    chunk_iter = pd.read_csv(f_csv, sep=';', encoding='latin1', low_memory=False, chunksize=50000)
-                    
-                    for chunk in chunk_iter:
-                        # Filtra apenas Energisa Paraíba
-                        epb_chunk = chunk[chunk['SigAgente'] == AGENTE_ALVO]
-                        df_epb_list.append(epb_chunk)
-                        
-            # 3. Consolida e salva no disco do servidor
-            if df_epb_list:
-                df_final = pd.concat(df_epb_list, ignore_index=True)
-                df_final.to_csv(ARQUIVO_CACHE, index=False, encoding="utf-8", sep=";")
+                # Copia os dados do ZIP para o nosso ARQUIVO_CACHE físico em disco
+                with z.open(nome_arquivo) as source, open(ARQUIVO_CACHE, "wb") as target:
+                    shutil.copyfileobj(source, target)
 
     except Exception as e:
         erros.append(str(e))
@@ -107,20 +98,22 @@ def _coletar_dados_aneel() -> None:
 @app.get("/", summary="Página Inicial")
 def raiz():
     return {
-        "status": "API ANEEL (Indicadores EPB) rodando!", 
-        "instrucao": "Use o endpoint /dados no Power BI para obter o CSV filtrado."
+        "status": "API ANEEL (Indicadores Coletivos) rodando!", 
+        "instrucao": "Use o endpoint /dados no Power BI para obter o CSV."
     }
 
 @app.get(
     "/dados",
     response_class=FileResponse,
-    summary="Retorna o arquivo CSV filtrado",
+    summary="Retorna o arquivo CSV completo",
     description="Use este endpoint no Power BI via Web.Contents.",
 )
 def get_dados():
+    # Verifica se precisa baixar novamente
     if not _cache_valido():
         _coletar_dados_aneel()
 
+    # Se mesmo após tentar baixar o arquivo não existir, retorna erro
     if not os.path.exists(ARQUIVO_CACHE):
         return Response(
             content="Nenhum dado disponível. A conexão com a ANEEL pode ter falhado.",
@@ -128,10 +121,11 @@ def get_dados():
             media_type="text/plain",
         )
 
+    # Transmite o arquivo CSV direto do disco (Gasto de RAM = Quase zero!)
     return FileResponse(
         path=ARQUIVO_CACHE,
         media_type="text/csv",
-        filename="indicadores_epb.csv"
+        filename="indicadores_continuidade.csv"
     )
 
 @app.get("/status", summary="Status do cache e da última coleta")
