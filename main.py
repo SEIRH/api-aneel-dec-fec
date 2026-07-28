@@ -80,7 +80,7 @@ def _coletar_dados_aneel() -> None:
                 nome_arquivo = z.namelist()[0]
                 
                 with z.open(nome_arquivo) as f_csv:
-                    chunk_iter = pd.read_csv(f_csv, sep=';', encoding='latin1', low_memory=False, chunksize=50000)
+                    chunk_iter = pd.read_csv(f_csv, sep=';', encoding='utf-8', low_memory=False, chunksize=50000)
                     
                     for chunk in chunk_iter:
                         # Filtra se a coluna CONTÉM EPB ou EBO (ignorando maiúsculas/minúsculas)
@@ -96,7 +96,7 @@ def _coletar_dados_aneel() -> None:
             # 3. Consolida e salva no disco do servidor
             if df_pb_list:
                 df_final = pd.concat(df_pb_list, ignore_index=True)
-                df_final.to_csv(ARQUIVO_CACHE, index=False, encoding="utf-8", sep=";")
+                df_final.to_csv(ARQUIVO_CACHE, index=False, encoding="utf-8-sig", sep=";")
 
     except Exception as e:
         erros.append(str(e))
